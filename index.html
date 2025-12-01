@@ -50,6 +50,42 @@
         .slider-row input { flex: 1; }
         .slider-row span { width: 35px; text-align: right; font-size: 0.75rem; color: #aaa; font-family: monospace;}
 
+        #drag-overlay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 6px;
+            background: rgba(0, 0, 0, 0.55);
+            padding: 6px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            z-index: 11;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+        }
+
+        #drag-overlay .right-stack {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .drag-btn {
+            padding: 6px 10px;
+            background: #1a1a1f;
+            border: 1px solid #333;
+            color: #eee;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.15s ease;
+        }
+
+        .drag-btn:hover { background: #24242a; border-color: #555; }
+        .drag-btn.active { background: #0056b3; border-color: #0070d1; color: white; box-shadow: 0 0 8px rgba(0,123,255,0.5); }
+
+        .toggle-btn { min-width: 160px; text-align: center; }
+
         #stats { position: absolute; bottom: 10px; right: 10px; color: #666; font-size: 10px; pointer-events: none; text-align: right; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #111; }
@@ -68,21 +104,42 @@
         <div class="hint">Left Click: Rotate | Right Click: Pan<br><b>Drag Magnets to move them</b></div>
     </div>
 
-    <div class="panel-section">
-        <h2>Objects</h2>
-        <div class="control-group">
-            <label>Count <span id="count-val" class="value-display">200</span></label>
-            <input type="range" id="param-count" min="10" max="500" step="10" value="200">
+        <div class="panel-section">
+            <h2>Objects</h2>
+            <div class="control-group">
+                <label>Count <span id="count-val" class="value-display">200</span></label>
+                <input type="range" id="param-count" min="0" max="100" step="1" value="50">
+            </div>
+            <div class="control-group">
+                <label>Shape</label>
+                <select id="param-shape">
+                    <option value="box" selected>Cuboids (variable aspect)</option>
+                    <option value="sphere">Spheres</option>
+                    <option value="cylinder">Cylinders (variable aspect)</option>
+                </select>
+            </div>
+            <div class="control-group" id="object-aspect-group">
+                <label>Aspect <span id="aspect-val" class="value-display">4.0</span></label>
+                <input type="range" id="param-aspect" min="1" max="6" step="0.5" value="4">
+            </div>
+            <div class="control-group">
+                <label>Size <span id="size-val" class="value-display">1.0</span></label>
+                <input type="range" id="param-size" min="0.5" max="2" step="0.1" value="1">
+            </div>
+            <button id="btn-reset" class="primary">Respawn Objects</button>
         </div>
+
+    <div class="panel-section">
+        <h2>Surface</h2>
         <div class="control-group">
             <label>Shape</label>
-            <select id="param-shape">
-                <option value="sphere">Spheres</option>
-                <option value="box">Cuboids (2:1)</option>
-                <option value="cylinder">Cylinders (2:1)</option>
+            <select id="param-surface">
+                <option value="flat" selected>Flat Plane</option>
+                <option value="bowl">Bowl</option>
+                <option value="heightmap">Random Height Map</option>
             </select>
         </div>
-        <button id="btn-reset" class="primary">Respawn Objects</button>
+        <button id="btn-randomize-surface" class="primary">Randomize Height Map</button>
     </div>
 
     <div class="panel-section">
@@ -110,17 +167,29 @@
     </div>
 </div>
 
+<div id="drag-overlay">
+    <div class="right-stack">
+        <button id="btn-freeze-toggle" class="drag-btn toggle-btn">Live Sim: On</button>
+    </div>
+    <button class="drag-btn active" data-mode="xy">Move X/Y · Rotate Z</button>
+    <button class="drag-btn" data-mode="yz">Move Y/Z · Rotate X</button>
+    <button class="drag-btn" data-mode="zx">Move Z/X · Rotate Y</button>
+</div>
+
 <div id="stats">Physics: Cannon.js | Heightfield | Safety Clamp Active</div>
 
 <script>
 // --- Configuration ---
 const CONFIG = {
     objectCount: 200,
-    objectShape: 'sphere',
+    objectShape: 'box',
+    objectAspect: 4,
+    objectSize: 1,
     susceptibility: 25,
     magDrag: 0.5,
     linearDamping: 0.1,
-    maxForce: 50 // Strict clamping to prevent explosions
+    maxForce: 50, // Strict clamping to prevent explosions
+    surfaceType: 'flat'
 };
 
 // --- Global State ---
@@ -130,7 +199,27 @@ let bodyMeshes = [];
 let fields = [];
 let fieldMeshes = [];
 let floorBody;
+let floorMesh;
+let gridHelper;
+let surfaceSeed = Math.random() * 1000;
 let fieldIdCounter = 0;
+const fieldColors = [0x4fa3ff, 0xff7f50, 0x8aff78, 0xff6ad5, 0xffd166, 0x9d7bff];
+let freezeWhileDrag = false;
+
+function getFieldColor(id) {
+    return fieldColors[id % fieldColors.length];
+}
+
+const COUNT_MIN = 1;
+const COUNT_MAX = 2000;
+function countFromSlider(v) {
+    const t = v / 100;
+    return Math.max(COUNT_MIN, Math.round(COUNT_MIN * Math.pow(COUNT_MAX / COUNT_MIN, t)));
+}
+function sliderFromCount(count) {
+    const t = Math.log(Math.max(count, COUNT_MIN) / COUNT_MIN) / Math.log(COUNT_MAX / COUNT_MIN);
+    return Math.min(100, Math.max(0, Math.round(t * 100)));
+}
 
 // Input
 const raycaster = new THREE.Raycaster();
@@ -138,6 +227,13 @@ const mouse = new THREE.Vector2();
 let isDragging = false;
 let draggedFieldId = null;
 let dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let dragMode = 'xy';
+const dragModes = {
+    xy: { normal: new THREE.Vector3(0, 0, 1), rotateAxis: 'z' },
+    yz: { normal: new THREE.Vector3(1, 0, 0), rotateAxis: 'x' },
+    zx: { normal: new THREE.Vector3(0, 1, 0), rotateAxis: 'y' }
+};
+let lastPointer = new THREE.Vector2();
 
 function init() {
     // 1. Three.js
@@ -158,9 +254,14 @@ function init() {
 
     // Lights
     scene.add(new THREE.AmbientLight(0x404040));
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x080820, 0.6);
+    scene.add(hemi);
     const light = new THREE.DirectionalLight(0xffffff, 1.5);
     light.position.set(10, 50, 20);
     scene.add(light);
+    const fillLight = new THREE.DirectionalLight(0x88aaff, 0.6);
+    fillLight.position.set(-30, 20, -10);
+    scene.add(fillLight);
 
     // 2. Physics
     initPhysics();
@@ -170,9 +271,10 @@ function init() {
     
     // 4. UI & Logic
     setupUI();
+    setupDragOverlay();
     
     // Default Magnet
-    addField({x:0, y:15, z:0}, {x:0, y:0, z:90}, 80, 4);
+    addField({x:0, y:15, z:0}, {x:0, y:0, z:90}, 120, 4);
     
     // Objects
     setTimeout(resetObjects, 100);
@@ -198,22 +300,86 @@ function initPhysics() {
 }
 
 function createFloor() {
-    // Visual
-    const geo = new THREE.PlaneGeometry(100, 100, 20, 20);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = -Math.PI / 2;
-    scene.add(mesh);
-    
-    const grid = new THREE.GridHelper(100, 20, 0x444444, 0x222222);
-    scene.add(grid);
+    if(floorMesh) { scene.remove(floorMesh); floorMesh.geometry.dispose(); floorMesh.material.dispose(); floorMesh = null; }
+    if(gridHelper) { scene.remove(gridHelper); gridHelper = null; }
+    if(floorBody) { world.removeBody(floorBody); floorBody = null; }
 
-    // Physics (Infinite Plane)
-    const shape = new CANNON.Plane();
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0x222222, transparent: true, opacity: 0.45, metalness: 0.2, roughness: 0.6, side: THREE.DoubleSide });
+
+    if(CONFIG.surfaceType === 'flat') {
+        const geo = new THREE.PlaneGeometry(100, 100, 20, 20);
+        floorMesh = new THREE.Mesh(geo, baseMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        scene.add(floorMesh);
+
+        gridHelper = new THREE.GridHelper(100, 20, 0x444444, 0x222222);
+        scene.add(gridHelper);
+
+        const shape = new CANNON.Plane();
+        floorBody = new CANNON.Body({ mass: 0 });
+        floorBody.addShape(shape);
+        floorBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
+        world.addBody(floorBody);
+        return;
+    }
+
+    const { matrix, elementSize, width, depth } = buildHeightMatrix(CONFIG.surfaceType);
+    const geo = new THREE.PlaneGeometry(width, depth, matrix.length - 1, matrix[0].length - 1);
+    geo.rotateX(-Math.PI / 2);
+
+    const pos = geo.attributes.position;
+    for(let i=0; i<pos.count; i++) {
+        const ix = i % matrix.length;
+        const iz = Math.floor(i / matrix.length);
+        pos.setY(i, matrix[ix][iz]);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    floorMesh = new THREE.Mesh(geo, baseMat);
+    scene.add(floorMesh);
+
+    gridHelper = new THREE.GridHelper(Math.max(width, depth), Math.max(matrix.length, matrix[0].length), 0x333333, 0x1a1a1a);
+    gridHelper.position.y = 0.01;
+    scene.add(gridHelper);
+
+    const shape = new CANNON.Heightfield(matrix, { elementSize });
+    const xOffset = -((matrix.length - 1) * elementSize) / 2;
+    const zOffset = -((matrix[0].length - 1) * elementSize) / 2;
     floorBody = new CANNON.Body({ mass: 0 });
-    floorBody.addShape(shape);
-    floorBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
+    floorBody.addShape(shape, new CANNON.Vec3(xOffset, 0, zOffset));
+    floorBody.position.set(0, 0, 0);
     world.addBody(floorBody);
+}
+
+function buildHeightMatrix(type) {
+    const rows = 33;
+    const cols = 33;
+    const elementSize = 3;
+    const matrix = [];
+
+    for(let i=0; i<rows; i++) {
+        matrix[i] = [];
+        for(let j=0; j<cols; j++) {
+            const x = (i - (rows-1)/2) * elementSize;
+            const z = (j - (cols-1)/2) * elementSize;
+            let h = 0;
+            if(type === 'bowl') {
+                const r = Math.sqrt(x*x + z*z);
+                const rim = 60;
+                const depth = 12;
+                h = Math.min(depth, (r*r)/(rim*rim) * depth);
+            } else {
+                const freq = 0.06;
+                const freq2 = 0.14;
+                const noise = Math.sin((x + surfaceSeed) * freq) * Math.cos((z - surfaceSeed) * freq) * 4 + Math.sin((x + z + surfaceSeed) * freq2) * 2;
+                h = noise;
+            }
+            matrix[i][j] = h;
+        }
+    }
+
+    return { matrix, elementSize, width: (rows-1) * elementSize, depth: (cols-1) * elementSize };
 }
 
 function resetObjects() {
@@ -221,19 +387,27 @@ function resetObjects() {
     for(let b of bodyMeshes) { world.removeBody(b.body); scene.remove(b.mesh); }
     bodyMeshes = [];
 
-    // Material (High Contrast Yellow Basic)
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffcc00, wireframe: false });
+    // Material with proper shading
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.15, roughness: 0.4, emissive: 0x111100 });
 
     let shape, geo;
+    const aspect = CONFIG.objectAspect;
+    const size = CONFIG.objectSize;
     if(CONFIG.objectShape === 'sphere') {
-        geo = new THREE.SphereGeometry(0.6, 12, 12);
-        shape = new CANNON.Sphere(0.6);
+        const radius = 0.6 * size;
+        geo = new THREE.SphereGeometry(radius, 12, 12);
+        shape = new CANNON.Sphere(radius);
     } else if(CONFIG.objectShape === 'box') {
-        geo = new THREE.BoxGeometry(0.8, 1.6, 0.8);
-        shape = new CANNON.Box(new CANNON.Vec3(0.4, 0.8, 0.4));
+        const width = 0.8 * size;
+        const height = width * aspect;
+        const depth = 0.8 * size;
+        geo = new THREE.BoxGeometry(width, height, depth);
+        shape = new CANNON.Box(new CANNON.Vec3(width/2, height/2, depth/2));
     } else {
-        geo = new THREE.CylinderGeometry(0.4, 0.4, 1.6, 8);
-        shape = new CANNON.Cylinder(0.4, 0.4, 1.6, 8);
+        const radius = 0.4 * size;
+        const height = (radius * 2) * aspect;
+        geo = new THREE.CylinderGeometry(radius, radius, height, 12);
+        shape = new CANNON.Cylinder(radius, radius, height, 12);
         const q = new CANNON.Quaternion(); q.setFromAxisAngle(new CANNON.Vec3(1,0,0),-Math.PI/2);
         shape.transformAllPoints(new CANNON.Vec3(), q);
     }
@@ -333,8 +507,9 @@ function getBField(pos) {
         const safeDN = Math.max(dN, 1.0);
         const safeDS = Math.max(dS, 1.0);
         
-        const str = f.strength * 100;
-        
+        const normalizedStrength = Math.max(f.strength, 0) / 100;
+        const str = Math.pow(normalizedStrength, 2.5) * 100;
+
         B.add(rN.normalize().multiplyScalar(str / safeDN));
         B.add(rS.normalize().multiplyScalar(-str / safeDS));
     }
@@ -352,6 +527,7 @@ function updateFieldVisuals(id) {
 
     // Rebuild
     while(mesh.children.length) mesh.remove(mesh.children[0]);
+    mesh.userData.barMesh = null;
 
     // Bar
     const w=2, d=2, h=w*f.aspectRatio;
@@ -361,36 +537,54 @@ function updateFieldVisuals(id) {
     const pos = geo.attributes.position;
     for(let i=0; i<pos.count; i++) cols.push(...(pos.getY(i)>0 ? [1,0.2,0.2] : [0.2,0.2,1]));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-    mesh.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true })));
+    const bar = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.2, roughness: 0.35, emissive: new THREE.Color(f.color).multiplyScalar(0.2) }));
+    bar.userData = { isFieldBar: true, isField: true, id: f.id };
+    mesh.userData.barMesh = bar;
+    mesh.add(bar);
 
     // Field Lines
-    const mat = new THREE.LineBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.4 });
+    const lineMaterial = new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color(f.color),
+        transparent: true,
+        opacity: 0.55,
+        metalness: 0.35,
+        roughness: 0.1,
+        emissive: new THREE.Color(f.color).multiplyScalar(0.4),
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        clearcoat: 0.6,
+        clearcoatRoughness: 0.2,
+        transmission: 0.25,
+        attenuationColor: new THREE.Color(f.color),
+        attenuationDistance: 12
+    });
+    lineMaterial.vertexColors = true;
     const group = new THREE.Group();
-    
+
     const halfLen = h/2 * 0.9;
     const N = new THREE.Vector3(0, halfLen, 0);
     const S = new THREE.Vector3(0, -halfLen, 0);
-    
+
     // Layers: Wide obtuse loops
-    const radii = [3, 5, 8, 12, 18, 26, 40]; 
-    
+    const radii = [3, 5, 8, 12, 18, 26, 40];
+
     radii.forEach(r => {
         // 8 lines per layer
         for(let i=0; i<8; i++) {
             const ang = (i/8)*Math.PI*2;
             const start = new THREE.Vector3(r*Math.cos(ang), 0, r*Math.sin(ang)); // Start at equator
-            
+
             // Trace North
             let pts = [];
             let curr = start.clone();
             for(let s=0; s<100; s++) {
                 pts.push(curr.clone());
                 if(curr.distanceTo(N) < 1) break;
-                const B = getLocalB(curr, N, S); 
+                const B = getLocalB(curr, N, S);
                 curr.addScaledVector(B, -1.0); // Go against B to N
             }
             pts.reverse();
-            
+
             // Trace South
             curr = start.clone();
             for(let s=0; s<100; s++) {
@@ -399,8 +593,27 @@ function updateFieldVisuals(id) {
                 const B = getLocalB(curr, N, S);
                 curr.addScaledVector(B, 1.0); // Go with B to S
             }
-            
-            group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+
+            const curve = new THREE.CatmullRomCurve3(pts);
+            const tubeGeo = new THREE.TubeGeometry(curve, Math.max(20, pts.length * 2), 0.18, 16, false);
+            const baseColor = new THREE.Color(f.color);
+            const headColor = baseColor.clone().lerp(new THREE.Color(0xffffff), 0.55);
+            const tailColor = baseColor.clone().multiplyScalar(0.35);
+            const colors = [];
+            const uv = tubeGeo.attributes.uv;
+            for(let idx=0; idx<uv.count; idx++) {
+                const t = uv.getY(idx);
+                const c = tailColor.clone().lerp(headColor, t);
+                colors.push(c.r, c.g, c.b);
+            }
+            tubeGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const lineMesh = new THREE.Mesh(tubeGeo, lineMaterial);
+            lineMesh.userData = { isFieldLine: true, phase: Math.random(), baseColor: f.color, head: headColor.getHex(), tail: tailColor.getHex() };
+            lineMesh.layers.set(0);
+            lineMesh.renderOrder = 1;
+            lineMesh.raycast = () => {};
+            group.add(lineMesh);
         }
     });
     mesh.add(group);
@@ -426,9 +639,33 @@ function getLocalB(p, N, S) {
 
 // --- UI & Main ---
 
-function animate() {
+function animateFieldLines(time) {
+    const t = time * 0.00015;
+    fieldMeshes.forEach(mesh => {
+        mesh.traverse(child => {
+            if(!child.userData || !child.userData.isFieldLine) return;
+            const geom = child.geometry;
+            if(!geom || !geom.attributes.color || !geom.attributes.uv) return;
+            const colors = geom.attributes.color;
+            const uv = geom.attributes.uv;
+            const head = new THREE.Color(child.userData.head || child.userData.baseColor || 0xffffff);
+            const tail = new THREE.Color(child.userData.tail || child.userData.baseColor || 0xffffff);
+            for(let i=0; i<colors.count; i++) {
+                const v = uv.getY(i);
+                const flow = (v + child.userData.phase + t) % 1;
+                const mix = (Math.sin((flow * 2 - 1) * Math.PI * 0.9) + 1) * 0.5;
+                const c = tail.clone().lerp(head, flow).lerp(head, mix * 0.3);
+                colors.setXYZ(i, c.r, c.g, c.b);
+            }
+            colors.needsUpdate = true;
+        });
+    });
+}
+
+function animate(time=0) {
     requestAnimationFrame(animate);
-    if(!isDragging) {
+    const shouldSimulate = !(isDragging && freezeWhileDrag);
+    if(shouldSimulate) {
         applyForces();
         world.step(1/60);
     }
@@ -437,6 +674,7 @@ function animate() {
         b.mesh.position.copy(b.body.position);
         b.mesh.quaternion.copy(b.body.quaternion);
     }
+    animateFieldLines(time);
     if(controls.enabled) controls.update();
     renderer.render(scene, camera);
 }
@@ -448,9 +686,9 @@ function onWindowResize() {
 }
 
 // UI Helpers
-function addField(pos, rot, str, asp) {
+function addField(pos, rot, str, asp, color) {
     const id = fieldIdCounter++;
-    const f = { id, pos: new THREE.Vector3(pos.x,pos.y,pos.z), rot: {...rot}, strength: str, aspectRatio: asp };
+    const f = { id, pos: new THREE.Vector3(pos.x,pos.y,pos.z), rot: {...rot}, strength: str, aspectRatio: asp, color: color ?? getFieldColor(id) };
     fields.push(f);
     const g = new THREE.Group();
     g.userData = { isField: true, id };
@@ -486,28 +724,42 @@ function onPointerDown(e) {
     mouse.x = (e.clientX/window.innerWidth)*2-1;
     mouse.y = -(e.clientY/window.innerHeight)*2+1;
     raycaster.setFromCamera(mouse, camera);
-    const hits = raycaster.intersectObjects(fieldMeshes, true);
+    const clickable = fieldMeshes.map(m => m.userData.barMesh).filter(Boolean);
+    const hits = raycaster.intersectObjects(clickable, true);
     if(hits.length) {
-        let p = hits[0].object;
-        while(p.parent && !p.userData.isField) p = p.parent;
-        if(p.userData.isField) {
-            isDragging = true; draggedFieldId = p.userData.id; controls.enabled = false;
-            dragPlane.constant = -p.position.y;
-        }
+        const bar = hits[0].object;
+        const mode = dragModes[dragMode];
+        isDragging = true; draggedFieldId = bar.userData.id; controls.enabled = false;
+        dragPlane.normal.copy(mode.normal);
+        const magnetPos = bar.parent ? bar.parent.position : bar.position;
+        dragPlane.constant = -dragPlane.normal.dot(magnetPos);
+        lastPointer.set(e.clientX, e.clientY);
     }
 }
 function onPointerMove(e) {
     mouse.x = (e.clientX/window.innerWidth)*2-1;
     mouse.y = -(e.clientY/window.innerHeight)*2+1;
     if(isDragging && draggedFieldId!=null) {
-        raycaster.setFromCamera(mouse, camera);
-        const hit = new THREE.Vector3();
-        raycaster.ray.intersectPlane(dragPlane, hit);
-        if(hit) {
-            const f = fields.find(x=>x.id===draggedFieldId);
-            f.pos.copy(hit);
+        const f = fields.find(x=>x.id===draggedFieldId);
+        if(!f) return;
+        if(e.altKey) {
+            const deltaX = e.clientX - lastPointer.x;
+            const deltaY = e.clientY - lastPointer.y;
+            lastPointer.set(e.clientX, e.clientY);
+            const delta = (deltaX + deltaY) * 0.5;
+            const axis = dragModes[dragMode].rotateAxis;
+            f.rot[axis] = (f.rot[axis] + delta) % 360;
             updateFieldVisuals(draggedFieldId);
-            // Don't re-render UI here to avoid focus loss
+        } else {
+            raycaster.setFromCamera(mouse, camera);
+            const hit = new THREE.Vector3();
+            raycaster.ray.intersectPlane(dragPlane, hit);
+            if(hit) {
+                f.pos.copy(hit);
+                updateFieldVisuals(draggedFieldId);
+                lastPointer.set(e.clientX, e.clientY);
+                // Don't re-render UI here to avoid focus loss
+            }
         }
     }
 }
@@ -515,15 +767,26 @@ function onPointerUp() { isDragging = false; controls.enabled = true; renderUI()
 
 function setupUI() {
     document.getElementById('btn-reset').onclick = resetObjects;
-    document.getElementById('btn-add-field').onclick = () => addField({x:0,y:15,z:0}, {x:0,y:0,z:90}, 50, 4);
-    
+    document.getElementById('btn-add-field').onclick = () => addField({x:0,y:15,z:0}, {x:0,y:0,z:90}, 120, 4);
+
+    const countSlider = document.getElementById('param-count');
+    const updateCountFromSlider = () => {
+        CONFIG.objectCount = countFromSlider(parseFloat(countSlider.value));
+        document.getElementById('count-val').innerText = CONFIG.objectCount;
+        resetObjects();
+    };
+    countSlider.oninput = updateCountFromSlider;
+    countSlider.value = sliderFromCount(CONFIG.objectCount);
+    document.getElementById('count-val').innerText = CONFIG.objectCount;
+
     const bind = (id, k) => document.getElementById(id).oninput = (e) => {
         CONFIG[k] = parseFloat(e.target.value);
         document.getElementById(id.replace('param-','') + '-val').innerText = CONFIG[k];
-        if(k==='objectCount' || k==='objectShape') resetObjects();
+        if(['objectShape','objectAspect','objectSize'].includes(k)) resetObjects();
         if(k==='param-gravity') world.gravity.set(0, CONFIG[k], 0);
     };
-    bind('param-count', 'objectCount');
+    bind('param-aspect', 'objectAspect');
+    bind('param-size', 'objectSize');
     bind('param-strength', 'susceptibility');
     bind('param-magdrag', 'magDrag');
     // Gravity needs special handling in bind? Added manual
@@ -531,8 +794,70 @@ function setupUI() {
         world.gravity.set(0, parseFloat(e.target.value), 0);
         document.getElementById('gravity-val').innerText = e.target.value;
     };
-    
-    document.getElementById('param-shape').onchange = (e) => { CONFIG.objectShape = e.target.value; resetObjects(); };
+
+    const aspectGroup = document.getElementById('object-aspect-group');
+    const updateAspectControl = () => {
+        aspectGroup.style.display = CONFIG.objectShape === 'sphere' ? 'none' : 'block';
+    };
+
+    document.getElementById('param-shape').onchange = (e) => {
+        CONFIG.objectShape = e.target.value;
+        updateAspectControl();
+        resetObjects();
+    };
+
+    const surfaceSelect = document.getElementById('param-surface');
+    const surfaceRandomBtn = document.getElementById('btn-randomize-surface');
+    const updateSurfaceControls = () => {
+        surfaceRandomBtn.style.display = CONFIG.surfaceType === 'heightmap' ? 'block' : 'none';
+    };
+    surfaceSelect.onchange = (e) => {
+        CONFIG.surfaceType = e.target.value;
+        updateSurfaceControls();
+        createFloor();
+        resetObjects();
+    };
+    surfaceRandomBtn.onclick = () => {
+        surfaceSeed = Math.random() * 1000;
+        if(CONFIG.surfaceType !== 'heightmap') {
+            CONFIG.surfaceType = 'heightmap';
+            surfaceSelect.value = 'heightmap';
+        }
+        updateSurfaceControls();
+        createFloor();
+        resetObjects();
+    };
+
+    updateAspectControl();
+    updateSurfaceControls();
+}
+
+function setupDragOverlay() {
+    const overlay = document.getElementById('drag-overlay');
+    overlay.querySelectorAll('.drag-btn[data-mode]').forEach(btn => {
+        btn.onclick = () => setDragMode(btn.dataset.mode);
+    });
+    document.getElementById('btn-freeze-toggle').onclick = () => {
+        freezeWhileDrag = !freezeWhileDrag;
+        updateFreezeButton();
+    };
+    setDragMode(dragMode);
+    updateFreezeButton();
+}
+
+function setDragMode(mode) {
+    if(!dragModes[mode]) return;
+    dragMode = mode;
+    document.querySelectorAll('#drag-overlay .drag-btn[data-mode]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+}
+
+function updateFreezeButton() {
+    const btn = document.getElementById('btn-freeze-toggle');
+    if(!btn) return;
+    btn.textContent = freezeWhileDrag ? 'Live Sim: Off' : 'Live Sim: On';
+    btn.classList.toggle('active', !freezeWhileDrag);
 }
 
 function renderUI() {
@@ -543,12 +868,15 @@ function renderUI() {
         fields.forEach((f, i) => {
             const el = list.children[i];
             el.querySelector(`[data-bind="str"]`).value = f.strength;
+            el.querySelector(`[data-bind="asp"]`).value = f.aspectRatio;
             el.querySelector(`[data-bind="rx"]`).value = f.rot.x;
             el.querySelector(`[data-bind="ry"]`).value = f.rot.y;
             el.querySelector(`[data-bind="rz"]`).value = f.rot.z;
             el.querySelector(`[data-bind="px"]`).value = f.pos.x;
             el.querySelector(`[data-bind="py"]`).value = f.pos.y;
             el.querySelector(`[data-bind="pz"]`).value = f.pos.z;
+            el.querySelector(`[data-display="str"]`).innerText = f.strength.toFixed(1);
+            el.querySelector(`[data-display="asp"]`).innerText = f.aspectRatio.toFixed(1);
         });
         return;
     }
@@ -559,8 +887,8 @@ function renderUI() {
         el.className = 'field-item';
         el.innerHTML = `
             <div class="field-header"><span class="field-title">Mag #${f.id}</span><button class="remove-field" onclick="removeField(${f.id})">X</button></div>
-            <div class="control-group"><label>Strength</label><input type="range" data-bind="str" min="0" max="200" value="${f.strength}" oninput="updateField(${f.id},'str',null,this.value)"></div>
-            <div class="control-group"><label>Aspect</label><input type="range" data-bind="asp" min="1" max="10" step="0.5" value="${f.aspectRatio}" oninput="updateField(${f.id},'aspect',null,this.value)"></div>
+            <div class="control-group"><label>Strength <span class="value-display" data-display="str">${f.strength.toFixed(1)}</span></label><input type="range" data-bind="str" min="0" max="200" value="${f.strength}" oninput="updateField(${f.id},'str',null,this.value)"></div>
+            <div class="control-group"><label>Aspect <span class="value-display" data-display="asp">${f.aspectRatio.toFixed(1)}</span></label><input type="range" data-bind="asp" min="1" max="10" step="0.5" value="${f.aspectRatio}" oninput="updateField(${f.id},'aspect',null,this.value)"></div>
             <div class="slider-stack">
                <div class="slider-row"><label>RX</label><input type="range" data-bind="rx" min="-180" max="180" value="${f.rot.x}" oninput="updateField(${f.id},'rot','x',this.value)"></div>
                <div class="slider-row"><label>RY</label><input type="range" data-bind="ry" min="-180" max="180" value="${f.rot.y}" oninput="updateField(${f.id},'rot','y',this.value)"></div>
