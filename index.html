@@ -452,7 +452,8 @@ function updateFieldVisuals(id) {
                 curr.addScaledVector(B, 1.0); // Go with B to S
             }
             const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
-            line.layers.set(1); // Ignore raycasting for dragging
+            // Keep lines visible while removing them from interaction targets
+            line.layers.set(0);
             line.raycast = () => {};
             group.add(line);
         }
