@@ -114,8 +114,25 @@
                 <label>Aspect <span id="aspect-val" class="value-display">4.0</span></label>
                 <input type="range" id="param-aspect" min="1" max="6" step="0.5" value="4">
             </div>
+            <div class="control-group">
+                <label>Size <span id="size-val" class="value-display">1.0</span></label>
+                <input type="range" id="param-size" min="0.5" max="2" step="0.1" value="1">
+            </div>
             <button id="btn-reset" class="primary">Respawn Objects</button>
         </div>
+
+    <div class="panel-section">
+        <h2>Surface</h2>
+        <div class="control-group">
+            <label>Shape</label>
+            <select id="param-surface">
+                <option value="flat" selected>Flat Plane</option>
+                <option value="bowl">Bowl</option>
+                <option value="heightmap">Random Height Map</option>
+            </select>
+        </div>
+        <button id="btn-randomize-surface" class="primary">Randomize Height Map</button>
+    </div>
 
     <div class="panel-section">
         <h2>Physics</h2>
@@ -156,10 +173,12 @@ const CONFIG = {
     objectCount: 200,
     objectShape: 'box',
     objectAspect: 4,
+    objectSize: 1,
     susceptibility: 25,
     magDrag: 0.5,
     linearDamping: 0.1,
-    maxForce: 50 // Strict clamping to prevent explosions
+    maxForce: 50, // Strict clamping to prevent explosions
+    surfaceType: 'flat'
 };
 
 // --- Global State ---
@@ -169,6 +188,9 @@ let bodyMeshes = [];
 let fields = [];
 let fieldMeshes = [];
 let floorBody;
+let floorMesh;
+let gridHelper;
+let surfaceSeed = Math.random() * 1000;
 let fieldIdCounter = 0;
 const fieldColors = [0x4fa3ff, 0xff7f50, 0x8aff78, 0xff6ad5, 0xffd166, 0x9d7bff];
 
@@ -255,22 +277,85 @@ function initPhysics() {
 }
 
 function createFloor() {
-    // Visual
-    const geo = new THREE.PlaneGeometry(100, 100, 20, 20);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = -Math.PI / 2;
-    scene.add(mesh);
-    
-    const grid = new THREE.GridHelper(100, 20, 0x444444, 0x222222);
-    scene.add(grid);
+    if(floorMesh) { scene.remove(floorMesh); floorMesh.geometry.dispose(); floorMesh.material.dispose(); floorMesh = null; }
+    if(gridHelper) { scene.remove(gridHelper); gridHelper = null; }
+    if(floorBody) { world.removeBody(floorBody); floorBody = null; }
 
-    // Physics (Infinite Plane)
-    const shape = new CANNON.Plane();
+    const baseMat = new THREE.MeshStandardMaterial({ color: 0x222222, transparent: true, opacity: 0.45, metalness: 0.2, roughness: 0.6, side: THREE.DoubleSide });
+
+    if(CONFIG.surfaceType === 'flat') {
+        const geo = new THREE.PlaneGeometry(100, 100, 20, 20);
+        floorMesh = new THREE.Mesh(geo, baseMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        scene.add(floorMesh);
+
+        gridHelper = new THREE.GridHelper(100, 20, 0x444444, 0x222222);
+        scene.add(gridHelper);
+
+        const shape = new CANNON.Plane();
+        floorBody = new CANNON.Body({ mass: 0 });
+        floorBody.addShape(shape);
+        floorBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
+        world.addBody(floorBody);
+        return;
+    }
+
+    const { matrix, elementSize, width, depth } = buildHeightMatrix(CONFIG.surfaceType);
+    const geo = new THREE.PlaneGeometry(width, depth, matrix.length - 1, matrix[0].length - 1);
+    geo.rotateX(-Math.PI / 2);
+
+    const pos = geo.attributes.position;
+    for(let i=0; i<pos.count; i++) {
+        const ix = i % matrix.length;
+        const iz = Math.floor(i / matrix.length);
+        pos.setY(i, matrix[ix][iz]);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    floorMesh = new THREE.Mesh(geo, baseMat);
+    scene.add(floorMesh);
+
+    gridHelper = new THREE.GridHelper(Math.max(width, depth), Math.max(matrix.length, matrix[0].length), 0x333333, 0x1a1a1a);
+    gridHelper.position.y = 0.01;
+    scene.add(gridHelper);
+
+    const shape = new CANNON.Heightfield(matrix, { elementSize });
     floorBody = new CANNON.Body({ mass: 0 });
     floorBody.addShape(shape);
+    floorBody.position.set(-width/2, 0, -depth/2);
     floorBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
     world.addBody(floorBody);
+}
+
+function buildHeightMatrix(type) {
+    const rows = 33;
+    const cols = 33;
+    const elementSize = 3;
+    const matrix = [];
+
+    for(let i=0; i<rows; i++) {
+        matrix[i] = [];
+        for(let j=0; j<cols; j++) {
+            const x = (i - (rows-1)/2) * elementSize;
+            const z = (j - (cols-1)/2) * elementSize;
+            let h = 0;
+            if(type === 'bowl') {
+                const r = Math.sqrt(x*x + z*z);
+                const rim = 60;
+                const depth = 12;
+                h = Math.min(depth, (r*r)/(rim*rim) * depth);
+            } else {
+                const freq = 0.06;
+                const freq2 = 0.14;
+                const noise = Math.sin((x + surfaceSeed) * freq) * Math.cos((z - surfaceSeed) * freq) * 4 + Math.sin((x + z + surfaceSeed) * freq2) * 2;
+                h = noise;
+            }
+            matrix[i][j] = h;
+        }
+    }
+
+    return { matrix, elementSize, width: (rows-1) * elementSize, depth: (cols-1) * elementSize };
 }
 
 function resetObjects() {
@@ -283,17 +368,19 @@ function resetObjects() {
 
     let shape, geo;
     const aspect = CONFIG.objectAspect;
+    const size = CONFIG.objectSize;
     if(CONFIG.objectShape === 'sphere') {
-        geo = new THREE.SphereGeometry(0.6, 12, 12);
-        shape = new CANNON.Sphere(0.6);
+        const radius = 0.6 * size;
+        geo = new THREE.SphereGeometry(radius, 12, 12);
+        shape = new CANNON.Sphere(radius);
     } else if(CONFIG.objectShape === 'box') {
-        const width = 0.8;
+        const width = 0.8 * size;
         const height = width * aspect;
-        const depth = 0.8;
+        const depth = 0.8 * size;
         geo = new THREE.BoxGeometry(width, height, depth);
         shape = new CANNON.Box(new CANNON.Vec3(width/2, height/2, depth/2));
     } else {
-        const radius = 0.4;
+        const radius = 0.4 * size;
         const height = (radius * 2) * aspect;
         geo = new THREE.CylinderGeometry(radius, radius, height, 12);
         shape = new CANNON.Cylinder(radius, radius, height, 12);
@@ -432,33 +519,48 @@ function updateFieldVisuals(id) {
     mesh.add(bar);
 
     // Field Lines
-    const mat = new THREE.LineBasicMaterial({ color: f.color, transparent: true, opacity: 0.45 });
+    const lineMaterial = new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color(f.color),
+        transparent: true,
+        opacity: 0.55,
+        metalness: 0.35,
+        roughness: 0.1,
+        emissive: new THREE.Color(f.color).multiplyScalar(0.4),
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        clearcoat: 0.6,
+        clearcoatRoughness: 0.2,
+        transmission: 0.25,
+        attenuationColor: new THREE.Color(f.color),
+        attenuationDistance: 12
+    });
+    lineMaterial.vertexColors = true;
     const group = new THREE.Group();
-    
+
     const halfLen = h/2 * 0.9;
     const N = new THREE.Vector3(0, halfLen, 0);
     const S = new THREE.Vector3(0, -halfLen, 0);
-    
+
     // Layers: Wide obtuse loops
-    const radii = [3, 5, 8, 12, 18, 26, 40]; 
-    
+    const radii = [3, 5, 8, 12, 18, 26, 40];
+
     radii.forEach(r => {
         // 8 lines per layer
         for(let i=0; i<8; i++) {
             const ang = (i/8)*Math.PI*2;
             const start = new THREE.Vector3(r*Math.cos(ang), 0, r*Math.sin(ang)); // Start at equator
-            
+
             // Trace North
             let pts = [];
             let curr = start.clone();
             for(let s=0; s<100; s++) {
                 pts.push(curr.clone());
                 if(curr.distanceTo(N) < 1) break;
-                const B = getLocalB(curr, N, S); 
+                const B = getLocalB(curr, N, S);
                 curr.addScaledVector(B, -1.0); // Go against B to N
             }
             pts.reverse();
-            
+
             // Trace South
             curr = start.clone();
             for(let s=0; s<100; s++) {
@@ -467,11 +569,26 @@ function updateFieldVisuals(id) {
                 const B = getLocalB(curr, N, S);
                 curr.addScaledVector(B, 1.0); // Go with B to S
             }
-            const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
-            // Keep lines visible while removing them from interaction targets
-            line.layers.set(0);
-            line.raycast = () => {};
-            group.add(line);
+
+            const curve = new THREE.CatmullRomCurve3(pts);
+            const tubeGeo = new THREE.TubeGeometry(curve, Math.max(20, pts.length * 2), 0.15, 12, false);
+            const baseColor = new THREE.Color(f.color);
+            const colors = [];
+            const uv = tubeGeo.attributes.uv;
+            for(let idx=0; idx<uv.count; idx++) {
+                const t = uv.getY(idx);
+                const pulse = 0.5 + 0.5 * Math.sin(t * Math.PI * 2);
+                const c = baseColor.clone().lerp(new THREE.Color(0xffffff), 0.35 + 0.25 * pulse);
+                colors.push(c.r, c.g, c.b);
+            }
+            tubeGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+            const lineMesh = new THREE.Mesh(tubeGeo, lineMaterial);
+            lineMesh.userData = { isFieldLine: true, phase: Math.random(), baseColor: f.color };
+            lineMesh.layers.set(0);
+            lineMesh.renderOrder = 1;
+            lineMesh.raycast = () => {};
+            group.add(lineMesh);
         }
     });
     mesh.add(group);
@@ -497,7 +614,29 @@ function getLocalB(p, N, S) {
 
 // --- UI & Main ---
 
-function animate() {
+function animateFieldLines(time) {
+    const t = time * 0.00035;
+    const white = new THREE.Color(0xffffff);
+    fieldMeshes.forEach(mesh => {
+        mesh.traverse(child => {
+            if(!child.userData || !child.userData.isFieldLine) return;
+            const geom = child.geometry;
+            if(!geom || !geom.attributes.color || !geom.attributes.uv) return;
+            const colors = geom.attributes.color;
+            const uv = geom.attributes.uv;
+            const base = new THREE.Color(child.userData.baseColor || 0xffffff);
+            for(let i=0; i<colors.count; i++) {
+                const v = uv.getY(i);
+                const pulse = 0.5 + 0.5 * Math.sin((v + child.userData.phase + t) * Math.PI * 2);
+                const c = base.clone().lerp(white, 0.35 + 0.25 * pulse);
+                colors.setXYZ(i, c.r, c.g, c.b);
+            }
+            colors.needsUpdate = true;
+        });
+    });
+}
+
+function animate(time=0) {
     requestAnimationFrame(animate);
     if(!isDragging) {
         applyForces();
@@ -508,6 +647,7 @@ function animate() {
         b.mesh.position.copy(b.body.position);
         b.mesh.quaternion.copy(b.body.quaternion);
     }
+    animateFieldLines(time);
     if(controls.enabled) controls.update();
     renderer.render(scene, camera);
 }
@@ -605,11 +745,12 @@ function setupUI() {
     const bind = (id, k) => document.getElementById(id).oninput = (e) => {
         CONFIG[k] = parseFloat(e.target.value);
         document.getElementById(id.replace('param-','') + '-val').innerText = CONFIG[k];
-        if(k==='objectCount' || k==='objectShape' || k==='objectAspect') resetObjects();
+        if(['objectCount','objectShape','objectAspect','objectSize'].includes(k)) resetObjects();
         if(k==='param-gravity') world.gravity.set(0, CONFIG[k], 0);
     };
     bind('param-count', 'objectCount');
     bind('param-aspect', 'objectAspect');
+    bind('param-size', 'objectSize');
     bind('param-strength', 'susceptibility');
     bind('param-magdrag', 'magDrag');
     // Gravity needs special handling in bind? Added manual
@@ -629,7 +770,30 @@ function setupUI() {
         resetObjects();
     };
 
+    const surfaceSelect = document.getElementById('param-surface');
+    const surfaceRandomBtn = document.getElementById('btn-randomize-surface');
+    const updateSurfaceControls = () => {
+        surfaceRandomBtn.style.display = CONFIG.surfaceType === 'heightmap' ? 'block' : 'none';
+    };
+    surfaceSelect.onchange = (e) => {
+        CONFIG.surfaceType = e.target.value;
+        updateSurfaceControls();
+        createFloor();
+        resetObjects();
+    };
+    surfaceRandomBtn.onclick = () => {
+        surfaceSeed = Math.random() * 1000;
+        if(CONFIG.surfaceType !== 'heightmap') {
+            CONFIG.surfaceType = 'heightmap';
+            surfaceSelect.value = 'heightmap';
+        }
+        updateSurfaceControls();
+        createFloor();
+        resetObjects();
+    };
+
     updateAspectControl();
+    updateSurfaceControls();
 }
 
 function setupDragOverlay() {
