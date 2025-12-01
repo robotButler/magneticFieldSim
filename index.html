@@ -1,12 +1,586 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Magnetic Field Simulator</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Ferrous Physics Simulation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; user-select: none; }
+        canvas { display: block; outline: none; }
+        
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 360px;
+            height: 100vh;
+            background: rgba(15, 15, 20, 0.95);
+            color: #eee;
+            overflow-y: auto;
+            backdrop-filter: blur(10px);
+            border-right: 1px solid #333;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+        }
+
+        .panel-section { padding: 15px; border-bottom: 1px solid #333; }
+        h1 { font-size: 1.2rem; margin: 0 0 5px 0; color: #4fa3ff; text-transform: uppercase; letter-spacing: 1px; }
+        h2 { font-size: 0.9rem; margin: 10px 0 5px 0; color: #aaa; text-transform: uppercase; }
+        .hint { font-size: 0.75rem; color: #888; margin-bottom: 10px; font-style: italic; }
+
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 4px; color: #ccc; }
+        .control-group input[type="range"] { width: 100%; cursor: pointer; }
+        .control-group select { background: #222; border: 1px solid #444; color: white; padding: 4px; border-radius: 4px; width: 100%; }
+        .value-display { color: #4fa3ff; font-family: monospace; }
+        button { background: #2a2a2a; border: 1px solid #444; color: white; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-size: 0.85rem; transition: all 0.2s; }
+        button:hover { background: #3a3a3a; border-color: #666; }
+        button.primary { background: #0056b3; border-color: #004494; width: 100%; margin-top: 5px; }
+        
+        .field-item { background: #1a1a1f; border: 1px solid #333; border-radius: 6px; padding: 10px; margin-bottom: 15px; }
+        .field-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #333; padding-bottom: 5px;}
+        .field-title { font-weight: bold; font-size: 0.85rem; color: #ffcc00; }
+        .remove-field { font-size: 0.7rem; padding: 2px 6px; background: #600; border-color: #800;}
+        
+        .slider-stack { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+        .slider-row { display: flex; align-items: center; gap: 10px; }
+        .slider-row label { width: 20px; margin: 0; font-weight: bold; color: #888; font-size: 0.7rem; }
+        .slider-row input { flex: 1; }
+        .slider-row span { width: 35px; text-align: right; font-size: 0.75rem; color: #aaa; font-family: monospace;}
+
+        #stats { position: absolute; bottom: 10px; right: 10px; color: #666; font-size: 10px; pointer-events: none; text-align: right; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+    </style>
+    <!-- Dependencies -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
 </head>
 <body>
-  <div id="app"></div>
-  <script src="src/main.js"></script>
+
+<div id="ui-container">
+    <div class="panel-section">
+        <h1>Ferrous Sim 3D</h1>
+        <div class="hint">Left Click: Rotate | Right Click: Pan<br><b>Drag Magnets to move them</b></div>
+    </div>
+
+    <div class="panel-section">
+        <h2>Objects</h2>
+        <div class="control-group">
+            <label>Count <span id="count-val" class="value-display">200</span></label>
+            <input type="range" id="param-count" min="10" max="500" step="10" value="200">
+        </div>
+        <div class="control-group">
+            <label>Shape</label>
+            <select id="param-shape">
+                <option value="sphere">Spheres</option>
+                <option value="box">Cuboids (2:1)</option>
+                <option value="cylinder">Cylinders (2:1)</option>
+            </select>
+        </div>
+        <button id="btn-reset" class="primary">Respawn Objects</button>
+    </div>
+
+    <div class="panel-section">
+        <h2>Physics</h2>
+        <div class="control-group">
+            <label>Susceptibility <span id="strength-val" class="value-display">25</span></label>
+            <input type="range" id="param-strength" min="1" max="100" step="1" value="25">
+        </div>
+        <div class="control-group">
+            <label>Mag. Drag <span id="magdrag-val" class="value-display">0.5</span></label>
+            <input type="range" id="param-magdrag" min="0" max="1" step="0.05" value="0.5">
+        </div>
+        <div class="control-group">
+            <label>Gravity <span id="gravity-val" class="value-display">-20</span></label>
+            <input type="range" id="param-gravity" min="-50" max="0" step="1" value="-20">
+        </div>
+    </div>
+
+    <div class="panel-section">
+        <div class="field-header">
+            <h2>Magnets</h2>
+            <button id="btn-add-field" style="font-size: 0.7rem; padding: 4px 8px;">+ New</button>
+        </div>
+        <div id="fields-list"></div>
+    </div>
+</div>
+
+<div id="stats">Physics: Cannon.js | Heightfield | Safety Clamp Active</div>
+
+<script>
+// --- Configuration ---
+const CONFIG = {
+    objectCount: 200,
+    objectShape: 'sphere',
+    susceptibility: 25,
+    magDrag: 0.5,
+    linearDamping: 0.1,
+    maxForce: 50 // Strict clamping to prevent explosions
+};
+
+// --- Global State ---
+let scene, camera, renderer, controls;
+let world; 
+let bodyMeshes = []; 
+let fields = [];
+let fieldMeshes = [];
+let floorBody;
+let fieldIdCounter = 0;
+
+// Input
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let isDragging = false;
+let draggedFieldId = null;
+let dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+function init() {
+    // 1. Three.js
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0e);
+
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 40, 80);
+    camera.lookAt(0, 10, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 10, 0);
+    controls.enableDamping = true;
+
+    // Lights
+    scene.add(new THREE.AmbientLight(0x404040));
+    const light = new THREE.DirectionalLight(0xffffff, 1.5);
+    light.position.set(10, 50, 20);
+    scene.add(light);
+
+    // 2. Physics
+    initPhysics();
+
+    // 3. Environment (Simple Flat Floor for Stability)
+    createFloor();
+    
+    // 4. UI & Logic
+    setupUI();
+    
+    // Default Magnet
+    addField({x:0, y:15, z:0}, {x:0, y:0, z:90}, 80, 4);
+    
+    // Objects
+    setTimeout(resetObjects, 100);
+
+    // Listeners
+    window.addEventListener('resize', onWindowResize);
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+
+    animate();
+}
+
+function initPhysics() {
+    world = new CANNON.World();
+    world.gravity.set(0, -20, 0); 
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.solver.iterations = 10;
+    
+    const mat = new CANNON.Material();
+    const contact = new CANNON.ContactMaterial(mat, mat, { friction: 0.3, restitution: 0.2 });
+    world.addContactMaterial(contact);
+}
+
+function createFloor() {
+    // Visual
+    const geo = new THREE.PlaneGeometry(100, 100, 20, 20);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.x = -Math.PI / 2;
+    scene.add(mesh);
+    
+    const grid = new THREE.GridHelper(100, 20, 0x444444, 0x222222);
+    scene.add(grid);
+
+    // Physics (Infinite Plane)
+    const shape = new CANNON.Plane();
+    floorBody = new CANNON.Body({ mass: 0 });
+    floorBody.addShape(shape);
+    floorBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
+    world.addBody(floorBody);
+}
+
+function resetObjects() {
+    // Cleanup
+    for(let b of bodyMeshes) { world.removeBody(b.body); scene.remove(b.mesh); }
+    bodyMeshes = [];
+
+    // Material (High Contrast Yellow Basic)
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffcc00, wireframe: false });
+
+    let shape, geo;
+    if(CONFIG.objectShape === 'sphere') {
+        geo = new THREE.SphereGeometry(0.6, 12, 12);
+        shape = new CANNON.Sphere(0.6);
+    } else if(CONFIG.objectShape === 'box') {
+        geo = new THREE.BoxGeometry(0.8, 1.6, 0.8);
+        shape = new CANNON.Box(new CANNON.Vec3(0.4, 0.8, 0.4));
+    } else {
+        geo = new THREE.CylinderGeometry(0.4, 0.4, 1.6, 8);
+        shape = new CANNON.Cylinder(0.4, 0.4, 1.6, 8);
+        const q = new CANNON.Quaternion(); q.setFromAxisAngle(new CANNON.Vec3(1,0,0),-Math.PI/2);
+        shape.transformAllPoints(new CANNON.Vec3(), q);
+    }
+
+    // Spawn in view
+    for(let i=0; i<CONFIG.objectCount; i++) {
+        const x = (Math.random() - 0.5) * 20;
+        const z = (Math.random() - 0.5) * 20;
+        const y = 10 + Math.random() * 20;
+
+        const mesh = new THREE.Mesh(geo, mat);
+        scene.add(mesh);
+
+        const body = new CANNON.Body({ mass: 1, linearDamping: 0.1, angularDamping: 0.8 });
+        body.addShape(shape);
+        body.position.set(x, y, z);
+        body.quaternion.setFromEuler(Math.random()*Math.PI, Math.random()*Math.PI, 0);
+        
+        world.addBody(body);
+        bodyMeshes.push({ mesh, body });
+    }
+}
+
+// --- Physics Step ---
+function applyForces() {
+    const eps = 0.5; // Gradient step
+    
+    for(let obj of bodyMeshes) {
+        const b = obj.body;
+        
+        // Respawn check
+        if(b.position.y < -50) {
+            b.position.set((Math.random()-0.5)*10, 30, (Math.random()-0.5)*10);
+            b.velocity.set(0,0,0);
+        }
+
+        const pos = new THREE.Vector3(b.position.x, b.position.y, b.position.z);
+        const B = getBField(pos);
+        const B2 = B.lengthSq();
+
+        if(B2 < 0.0001) continue;
+
+        // Force = grad(B^2)
+        const Bx = getBField(new THREE.Vector3(pos.x+eps, pos.y, pos.z)).lengthSq();
+        const By = getBField(new THREE.Vector3(pos.x, pos.y+eps, pos.z)).lengthSq();
+        const Bz = getBField(new THREE.Vector3(pos.x, pos.y, pos.z+eps)).lengthSq();
+        
+        const F = new THREE.Vector3(Bx - B2, By - B2, Bz - B2).multiplyScalar(1/eps);
+        
+        // Apply Susceptibility
+        F.multiplyScalar(CONFIG.susceptibility * 0.01);
+        
+        // Clamp Force
+        if(F.length() > CONFIG.maxForce) F.normalize().multiplyScalar(CONFIG.maxForce);
+        
+        b.applyForce(new CANNON.Vec3(F.x, F.y, F.z), b.position);
+
+        // Alignment Torque
+        const bodyQuat = new THREE.Quaternion(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+        const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(bodyQuat); // Long axis
+        
+        let Bdir = B.clone().normalize();
+        if(axis.dot(Bdir) < 0) Bdir.negate(); // Align closest pole
+        
+        const torque = new THREE.Vector3().crossVectors(axis, Bdir);
+        torque.multiplyScalar(B.length() * 50); // Torque magnitude
+        
+        if(torque.length() > 50) torque.normalize().multiplyScalar(50); // Clamp torque
+
+        b.torque.x += torque.x;
+        b.torque.y += torque.y;
+        b.torque.z += torque.z;
+        
+        // Mag Drag
+        const damp = Math.max(0.1, 1.0 - (CONFIG.magDrag * 0.1));
+        b.angularVelocity.scale(damp, b.angularVelocity);
+    }
+}
+
+function getBField(pos) {
+    const B = new THREE.Vector3();
+    for(let f of fields) {
+        const mesh = fieldMeshes.find(m => m.userData.id === f.id);
+        if(!mesh) continue;
+        
+        const len = 2.0 * f.aspectRatio * 0.45; // Pole offset
+        const N = new THREE.Vector3(0, len, 0).applyQuaternion(mesh.quaternion).add(f.pos);
+        const S = new THREE.Vector3(0, -len, 0).applyQuaternion(mesh.quaternion).add(f.pos);
+        
+        const rN = new THREE.Vector3().subVectors(pos, N);
+        const rS = new THREE.Vector3().subVectors(pos, S);
+        
+        const dN = rN.lengthSq();
+        const dS = rS.lengthSq();
+        
+        // Avoid singularity
+        const safeDN = Math.max(dN, 1.0);
+        const safeDS = Math.max(dS, 1.0);
+        
+        const str = f.strength * 100;
+        
+        B.add(rN.normalize().multiplyScalar(str / safeDN));
+        B.add(rS.normalize().multiplyScalar(-str / safeDS));
+    }
+    return B;
+}
+
+// --- Visuals ---
+function updateFieldVisuals(id) {
+    const f = fields.find(x => x.id === id);
+    const mesh = fieldMeshes.find(x => x.userData.id === id);
+    if(!f || !mesh) return;
+
+    mesh.position.copy(f.pos);
+    mesh.rotation.set(f.rot.x*Math.PI/180, f.rot.y*Math.PI/180, f.rot.z*Math.PI/180, 'YXZ');
+
+    // Rebuild
+    while(mesh.children.length) mesh.remove(mesh.children[0]);
+
+    // Bar
+    const w=2, d=2, h=w*f.aspectRatio;
+    const geo = new THREE.BoxGeometry(w, h, d);
+    // Color poles
+    const cols = [];
+    const pos = geo.attributes.position;
+    for(let i=0; i<pos.count; i++) cols.push(...(pos.getY(i)>0 ? [1,0.2,0.2] : [0.2,0.2,1]));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    mesh.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true })));
+
+    // Field Lines
+    const mat = new THREE.LineBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.4 });
+    const group = new THREE.Group();
+    
+    const halfLen = h/2 * 0.9;
+    const N = new THREE.Vector3(0, halfLen, 0);
+    const S = new THREE.Vector3(0, -halfLen, 0);
+    
+    // Layers: Wide obtuse loops
+    const radii = [3, 5, 8, 12, 18, 26, 40]; 
+    
+    radii.forEach(r => {
+        // 8 lines per layer
+        for(let i=0; i<8; i++) {
+            const ang = (i/8)*Math.PI*2;
+            const start = new THREE.Vector3(r*Math.cos(ang), 0, r*Math.sin(ang)); // Start at equator
+            
+            // Trace North
+            let pts = [];
+            let curr = start.clone();
+            for(let s=0; s<100; s++) {
+                pts.push(curr.clone());
+                if(curr.distanceTo(N) < 1) break;
+                const B = getLocalB(curr, N, S); 
+                curr.addScaledVector(B, -1.0); // Go against B to N
+            }
+            pts.reverse();
+            
+            // Trace South
+            curr = start.clone();
+            for(let s=0; s<100; s++) {
+                if(s>0) pts.push(curr.clone());
+                if(curr.distanceTo(S) < 1) break;
+                const B = getLocalB(curr, N, S);
+                curr.addScaledVector(B, 1.0); // Go with B to S
+            }
+            
+            group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+        }
+    });
+    mesh.add(group);
+    
+    // Physics Body (Static)
+    if(mesh.userData.body) world.removeBody(mesh.userData.body);
+    const body = new CANNON.Body({ mass: 0 });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(w/2, h/2, d/2)));
+    body.position.copy(mesh.position);
+    body.quaternion.copy(mesh.quaternion);
+    mesh.userData.body = body;
+    world.addBody(body);
+}
+
+function getLocalB(p, N, S) {
+    const rN = new THREE.Vector3().subVectors(p, N);
+    const rS = new THREE.Vector3().subVectors(p, S);
+    const dN = rN.lengthSq();
+    const dS = rS.lengthSq();
+    return new THREE.Vector3().addScaledVector(rN.normalize(), 1/dN).addScaledVector(rS.normalize(), -1/dS).normalize();
+}
+
+
+// --- UI & Main ---
+
+function animate() {
+    requestAnimationFrame(animate);
+    if(!isDragging) {
+        applyForces();
+        world.step(1/60);
+    }
+    // Sync
+    for(let b of bodyMeshes) {
+        b.mesh.position.copy(b.body.position);
+        b.mesh.quaternion.copy(b.body.quaternion);
+    }
+    if(controls.enabled) controls.update();
+    renderer.render(scene, camera);
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// UI Helpers
+function addField(pos, rot, str, asp) {
+    const id = fieldIdCounter++;
+    const f = { id, pos: new THREE.Vector3(pos.x,pos.y,pos.z), rot: {...rot}, strength: str, aspectRatio: asp };
+    fields.push(f);
+    const g = new THREE.Group();
+    g.userData = { isField: true, id };
+    scene.add(g);
+    fieldMeshes.push(g);
+    updateFieldVisuals(id);
+    renderUI();
+}
+
+function removeField(id) {
+    const m = fieldMeshes.find(x=>x.userData.id===id);
+    if(m) { scene.remove(m); world.removeBody(m.userData.body); }
+    fields = fields.filter(x=>x.id!==id);
+    fieldMeshes = fieldMeshes.filter(x=>x!==m);
+    renderUI();
+}
+
+function updateField(id, k, ax, v) {
+    const f = fields.find(x=>x.id===id);
+    if(!f) return;
+    if(k==='str') f.strength = parseFloat(v);
+    else if(k==='aspect') f.aspectRatio = parseFloat(v);
+    else f[k][ax] = parseFloat(v);
+    updateFieldVisuals(id);
+    renderUI(); // Lazy update to keep values synced
+    // Fix focus loss by not re-rendering whole list on drag?
+    // For simplicity in this generated file, we rely on native slider drag events bubbling correctly.
+    // A proper app would bind listeners differently.
+}
+
+function onPointerDown(e) {
+    if(e.button!==0) return;
+    mouse.x = (e.clientX/window.innerWidth)*2-1;
+    mouse.y = -(e.clientY/window.innerHeight)*2+1;
+    raycaster.setFromCamera(mouse, camera);
+    const hits = raycaster.intersectObjects(fieldMeshes, true);
+    if(hits.length) {
+        let p = hits[0].object;
+        while(p.parent && !p.userData.isField) p = p.parent;
+        if(p.userData.isField) {
+            isDragging = true; draggedFieldId = p.userData.id; controls.enabled = false;
+            dragPlane.constant = -p.position.y;
+        }
+    }
+}
+function onPointerMove(e) {
+    mouse.x = (e.clientX/window.innerWidth)*2-1;
+    mouse.y = -(e.clientY/window.innerHeight)*2+1;
+    if(isDragging && draggedFieldId!=null) {
+        raycaster.setFromCamera(mouse, camera);
+        const hit = new THREE.Vector3();
+        raycaster.ray.intersectPlane(dragPlane, hit);
+        if(hit) {
+            const f = fields.find(x=>x.id===draggedFieldId);
+            f.pos.copy(hit);
+            updateFieldVisuals(draggedFieldId);
+            // Don't re-render UI here to avoid focus loss
+        }
+    }
+}
+function onPointerUp() { isDragging = false; controls.enabled = true; renderUI(); }
+
+function setupUI() {
+    document.getElementById('btn-reset').onclick = resetObjects;
+    document.getElementById('btn-add-field').onclick = () => addField({x:0,y:15,z:0}, {x:0,y:0,z:90}, 50, 4);
+    
+    const bind = (id, k) => document.getElementById(id).oninput = (e) => {
+        CONFIG[k] = parseFloat(e.target.value);
+        document.getElementById(id.replace('param-','') + '-val').innerText = CONFIG[k];
+        if(k==='objectCount' || k==='objectShape') resetObjects();
+        if(k==='param-gravity') world.gravity.set(0, CONFIG[k], 0);
+    };
+    bind('param-count', 'objectCount');
+    bind('param-strength', 'susceptibility');
+    bind('param-magdrag', 'magDrag');
+    // Gravity needs special handling in bind? Added manual
+    document.getElementById('param-gravity').oninput = (e) => {
+        world.gravity.set(0, parseFloat(e.target.value), 0);
+        document.getElementById('gravity-val').innerText = e.target.value;
+    };
+    
+    document.getElementById('param-shape').onchange = (e) => { CONFIG.objectShape = e.target.value; resetObjects(); };
+}
+
+function renderUI() {
+    const list = document.getElementById('fields-list');
+    // Simple diffing: only re-render if count changed to avoid killing drag state
+    if(list.children.length === fields.length) {
+        // Just update values
+        fields.forEach((f, i) => {
+            const el = list.children[i];
+            el.querySelector(`[data-bind="str"]`).value = f.strength;
+            el.querySelector(`[data-bind="rx"]`).value = f.rot.x;
+            el.querySelector(`[data-bind="ry"]`).value = f.rot.y;
+            el.querySelector(`[data-bind="rz"]`).value = f.rot.z;
+            el.querySelector(`[data-bind="px"]`).value = f.pos.x;
+            el.querySelector(`[data-bind="py"]`).value = f.pos.y;
+            el.querySelector(`[data-bind="pz"]`).value = f.pos.z;
+        });
+        return;
+    }
+    
+    list.innerHTML = '';
+    fields.forEach(f => {
+        const el = document.createElement('div');
+        el.className = 'field-item';
+        el.innerHTML = `
+            <div class="field-header"><span class="field-title">Mag #${f.id}</span><button class="remove-field" onclick="removeField(${f.id})">X</button></div>
+            <div class="control-group"><label>Strength</label><input type="range" data-bind="str" min="0" max="200" value="${f.strength}" oninput="updateField(${f.id},'str',null,this.value)"></div>
+            <div class="control-group"><label>Aspect</label><input type="range" data-bind="asp" min="1" max="10" step="0.5" value="${f.aspectRatio}" oninput="updateField(${f.id},'aspect',null,this.value)"></div>
+            <div class="slider-stack">
+               <div class="slider-row"><label>RX</label><input type="range" data-bind="rx" min="-180" max="180" value="${f.rot.x}" oninput="updateField(${f.id},'rot','x',this.value)"></div>
+               <div class="slider-row"><label>RY</label><input type="range" data-bind="ry" min="-180" max="180" value="${f.rot.y}" oninput="updateField(${f.id},'rot','y',this.value)"></div>
+               <div class="slider-row"><label>RZ</label><input type="range" data-bind="rz" min="-180" max="180" value="${f.rot.z}" oninput="updateField(${f.id},'rot','z',this.value)"></div>
+            </div>
+            <hr style="border-color:#333">
+            <div class="slider-stack">
+               <div class="slider-row"><label>PX</label><input type="range" data-bind="px" min="-45" max="45" value="${f.pos.x}" oninput="updateField(${f.id},'pos','x',this.value)"></div>
+               <div class="slider-row"><label>PY</label><input type="range" data-bind="py" min="-20" max="40" value="${f.pos.y}" oninput="updateField(${f.id},'pos','y',this.value)"></div>
+               <div class="slider-row"><label>PZ</label><input type="range" data-bind="pz" min="-45" max="45" value="${f.pos.z}" oninput="updateField(${f.id},'pos','z',this.value)"></div>
+            </div>
+        `;
+        list.appendChild(el);
+    });
+}
+
+init();
+
+window.removeField = removeField;
+window.updateField = updateField;
+</script>
 </body>
 </html>
