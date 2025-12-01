@@ -96,22 +96,26 @@
         <div class="hint">Left Click: Rotate | Right Click: Pan<br><b>Drag Magnets to move them</b></div>
     </div>
 
-    <div class="panel-section">
-        <h2>Objects</h2>
-        <div class="control-group">
-            <label>Count <span id="count-val" class="value-display">200</span></label>
-            <input type="range" id="param-count" min="10" max="500" step="10" value="200">
+        <div class="panel-section">
+            <h2>Objects</h2>
+            <div class="control-group">
+                <label>Count <span id="count-val" class="value-display">200</span></label>
+                <input type="range" id="param-count" min="10" max="500" step="10" value="200">
+            </div>
+            <div class="control-group">
+                <label>Shape</label>
+                <select id="param-shape">
+                    <option value="box" selected>Cuboids (variable aspect)</option>
+                    <option value="sphere">Spheres</option>
+                    <option value="cylinder">Cylinders (variable aspect)</option>
+                </select>
+            </div>
+            <div class="control-group" id="object-aspect-group">
+                <label>Aspect <span id="aspect-val" class="value-display">4.0</span></label>
+                <input type="range" id="param-aspect" min="1" max="6" step="0.5" value="4">
+            </div>
+            <button id="btn-reset" class="primary">Respawn Objects</button>
         </div>
-        <div class="control-group">
-            <label>Shape</label>
-            <select id="param-shape">
-                <option value="sphere">Spheres</option>
-                <option value="box">Cuboids (2:1)</option>
-                <option value="cylinder">Cylinders (2:1)</option>
-            </select>
-        </div>
-        <button id="btn-reset" class="primary">Respawn Objects</button>
-    </div>
 
     <div class="panel-section">
         <h2>Physics</h2>
@@ -150,7 +154,8 @@
 // --- Configuration ---
 const CONFIG = {
     objectCount: 200,
-    objectShape: 'sphere',
+    objectShape: 'box',
+    objectAspect: 4,
     susceptibility: 25,
     magDrag: 0.5,
     linearDamping: 0.1,
@@ -165,6 +170,11 @@ let fields = [];
 let fieldMeshes = [];
 let floorBody;
 let fieldIdCounter = 0;
+const fieldColors = [0x4fa3ff, 0xff7f50, 0x8aff78, 0xff6ad5, 0xffd166, 0x9d7bff];
+
+function getFieldColor(id) {
+    return fieldColors[id % fieldColors.length];
+}
 
 // Input
 const raycaster = new THREE.Raycaster();
@@ -219,7 +229,7 @@ function init() {
     setupDragOverlay();
     
     // Default Magnet
-    addField({x:0, y:15, z:0}, {x:0, y:0, z:90}, 80, 4);
+    addField({x:0, y:15, z:0}, {x:0, y:0, z:90}, 120, 4);
     
     // Objects
     setTimeout(resetObjects, 100);
@@ -272,15 +282,21 @@ function resetObjects() {
     const mat = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.15, roughness: 0.4, emissive: 0x111100 });
 
     let shape, geo;
+    const aspect = CONFIG.objectAspect;
     if(CONFIG.objectShape === 'sphere') {
         geo = new THREE.SphereGeometry(0.6, 12, 12);
         shape = new CANNON.Sphere(0.6);
     } else if(CONFIG.objectShape === 'box') {
-        geo = new THREE.BoxGeometry(0.8, 1.6, 0.8);
-        shape = new CANNON.Box(new CANNON.Vec3(0.4, 0.8, 0.4));
+        const width = 0.8;
+        const height = width * aspect;
+        const depth = 0.8;
+        geo = new THREE.BoxGeometry(width, height, depth);
+        shape = new CANNON.Box(new CANNON.Vec3(width/2, height/2, depth/2));
     } else {
-        geo = new THREE.CylinderGeometry(0.4, 0.4, 1.6, 8);
-        shape = new CANNON.Cylinder(0.4, 0.4, 1.6, 8);
+        const radius = 0.4;
+        const height = (radius * 2) * aspect;
+        geo = new THREE.CylinderGeometry(radius, radius, height, 12);
+        shape = new CANNON.Cylinder(radius, radius, height, 12);
         const q = new CANNON.Quaternion(); q.setFromAxisAngle(new CANNON.Vec3(1,0,0),-Math.PI/2);
         shape.transformAllPoints(new CANNON.Vec3(), q);
     }
@@ -410,13 +426,13 @@ function updateFieldVisuals(id) {
     const pos = geo.attributes.position;
     for(let i=0; i<pos.count; i++) cols.push(...(pos.getY(i)>0 ? [1,0.2,0.2] : [0.2,0.2,1]));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-    const bar = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.2, roughness: 0.35 }));
+    const bar = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.2, roughness: 0.35, emissive: new THREE.Color(f.color).multiplyScalar(0.2) }));
     bar.userData = { isFieldBar: true, isField: true, id: f.id };
     mesh.userData.barMesh = bar;
     mesh.add(bar);
 
     // Field Lines
-    const mat = new THREE.LineBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.4 });
+    const mat = new THREE.LineBasicMaterial({ color: f.color, transparent: true, opacity: 0.45 });
     const group = new THREE.Group();
     
     const halfLen = h/2 * 0.9;
@@ -503,9 +519,9 @@ function onWindowResize() {
 }
 
 // UI Helpers
-function addField(pos, rot, str, asp) {
+function addField(pos, rot, str, asp, color) {
     const id = fieldIdCounter++;
-    const f = { id, pos: new THREE.Vector3(pos.x,pos.y,pos.z), rot: {...rot}, strength: str, aspectRatio: asp };
+    const f = { id, pos: new THREE.Vector3(pos.x,pos.y,pos.z), rot: {...rot}, strength: str, aspectRatio: asp, color: color ?? getFieldColor(id) };
     fields.push(f);
     const g = new THREE.Group();
     g.userData = { isField: true, id };
@@ -584,15 +600,16 @@ function onPointerUp() { isDragging = false; controls.enabled = true; renderUI()
 
 function setupUI() {
     document.getElementById('btn-reset').onclick = resetObjects;
-    document.getElementById('btn-add-field').onclick = () => addField({x:0,y:15,z:0}, {x:0,y:0,z:90}, 50, 4);
+    document.getElementById('btn-add-field').onclick = () => addField({x:0,y:15,z:0}, {x:0,y:0,z:90}, 120, 4);
     
     const bind = (id, k) => document.getElementById(id).oninput = (e) => {
         CONFIG[k] = parseFloat(e.target.value);
         document.getElementById(id.replace('param-','') + '-val').innerText = CONFIG[k];
-        if(k==='objectCount' || k==='objectShape') resetObjects();
+        if(k==='objectCount' || k==='objectShape' || k==='objectAspect') resetObjects();
         if(k==='param-gravity') world.gravity.set(0, CONFIG[k], 0);
     };
     bind('param-count', 'objectCount');
+    bind('param-aspect', 'objectAspect');
     bind('param-strength', 'susceptibility');
     bind('param-magdrag', 'magDrag');
     // Gravity needs special handling in bind? Added manual
@@ -601,7 +618,18 @@ function setupUI() {
         document.getElementById('gravity-val').innerText = e.target.value;
     };
 
-    document.getElementById('param-shape').onchange = (e) => { CONFIG.objectShape = e.target.value; resetObjects(); };
+    const aspectGroup = document.getElementById('object-aspect-group');
+    const updateAspectControl = () => {
+        aspectGroup.style.display = CONFIG.objectShape === 'sphere' ? 'none' : 'block';
+    };
+
+    document.getElementById('param-shape').onchange = (e) => {
+        CONFIG.objectShape = e.target.value;
+        updateAspectControl();
+        resetObjects();
+    };
+
+    updateAspectControl();
 }
 
 function setupDragOverlay() {
