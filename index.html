@@ -50,6 +50,34 @@
         .slider-row input { flex: 1; }
         .slider-row span { width: 35px; text-align: right; font-size: 0.75rem; color: #aaa; font-family: monospace;}
 
+        #drag-overlay {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 6px;
+            background: rgba(0, 0, 0, 0.55);
+            padding: 6px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            z-index: 11;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+        }
+
+        .drag-btn {
+            padding: 6px 10px;
+            background: #1a1a1f;
+            border: 1px solid #333;
+            color: #eee;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.15s ease;
+        }
+
+        .drag-btn:hover { background: #24242a; border-color: #555; }
+        .drag-btn.active { background: #0056b3; border-color: #0070d1; color: white; box-shadow: 0 0 8px rgba(0,123,255,0.5); }
+
         #stats { position: absolute; bottom: 10px; right: 10px; color: #666; font-size: 10px; pointer-events: none; text-align: right; }
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #111; }
@@ -110,6 +138,12 @@
     </div>
 </div>
 
+<div id="drag-overlay">
+    <button class="drag-btn active" data-mode="xy">Move X/Y · Rotate Z</button>
+    <button class="drag-btn" data-mode="yz">Move Y/Z · Rotate X</button>
+    <button class="drag-btn" data-mode="zx">Move Z/X · Rotate Y</button>
+</div>
+
 <div id="stats">Physics: Cannon.js | Heightfield | Safety Clamp Active</div>
 
 <script>
@@ -138,6 +172,13 @@ const mouse = new THREE.Vector2();
 let isDragging = false;
 let draggedFieldId = null;
 let dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let dragMode = 'xy';
+const dragModes = {
+    xy: { normal: new THREE.Vector3(0, 0, 1), rotateAxis: 'z' },
+    yz: { normal: new THREE.Vector3(1, 0, 0), rotateAxis: 'x' },
+    zx: { normal: new THREE.Vector3(0, 1, 0), rotateAxis: 'y' }
+};
+let lastPointer = new THREE.Vector2();
 
 function init() {
     // 1. Three.js
@@ -158,9 +199,14 @@ function init() {
 
     // Lights
     scene.add(new THREE.AmbientLight(0x404040));
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x080820, 0.6);
+    scene.add(hemi);
     const light = new THREE.DirectionalLight(0xffffff, 1.5);
     light.position.set(10, 50, 20);
     scene.add(light);
+    const fillLight = new THREE.DirectionalLight(0x88aaff, 0.6);
+    fillLight.position.set(-30, 20, -10);
+    scene.add(fillLight);
 
     // 2. Physics
     initPhysics();
@@ -170,6 +216,7 @@ function init() {
     
     // 4. UI & Logic
     setupUI();
+    setupDragOverlay();
     
     // Default Magnet
     addField({x:0, y:15, z:0}, {x:0, y:0, z:90}, 80, 4);
@@ -221,8 +268,8 @@ function resetObjects() {
     for(let b of bodyMeshes) { world.removeBody(b.body); scene.remove(b.mesh); }
     bodyMeshes = [];
 
-    // Material (High Contrast Yellow Basic)
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffcc00, wireframe: false });
+    // Material with proper shading
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffcc00, metalness: 0.15, roughness: 0.4, emissive: 0x111100 });
 
     let shape, geo;
     if(CONFIG.objectShape === 'sphere') {
@@ -333,8 +380,9 @@ function getBField(pos) {
         const safeDN = Math.max(dN, 1.0);
         const safeDS = Math.max(dS, 1.0);
         
-        const str = f.strength * 100;
-        
+        const normalizedStrength = Math.max(f.strength, 0) / 100;
+        const str = Math.pow(normalizedStrength, 2.5) * 100;
+
         B.add(rN.normalize().multiplyScalar(str / safeDN));
         B.add(rS.normalize().multiplyScalar(-str / safeDS));
     }
@@ -352,6 +400,7 @@ function updateFieldVisuals(id) {
 
     // Rebuild
     while(mesh.children.length) mesh.remove(mesh.children[0]);
+    mesh.userData.barMesh = null;
 
     // Bar
     const w=2, d=2, h=w*f.aspectRatio;
@@ -361,7 +410,10 @@ function updateFieldVisuals(id) {
     const pos = geo.attributes.position;
     for(let i=0; i<pos.count; i++) cols.push(...(pos.getY(i)>0 ? [1,0.2,0.2] : [0.2,0.2,1]));
     geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-    mesh.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true })));
+    const bar = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.2, roughness: 0.35 }));
+    bar.userData = { isFieldBar: true, isField: true, id: f.id };
+    mesh.userData.barMesh = bar;
+    mesh.add(bar);
 
     // Field Lines
     const mat = new THREE.LineBasicMaterial({ color: 0x4fa3ff, transparent: true, opacity: 0.4 });
@@ -399,8 +451,10 @@ function updateFieldVisuals(id) {
                 const B = getLocalB(curr, N, S);
                 curr.addScaledVector(B, 1.0); // Go with B to S
             }
-            
-            group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat));
+            const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mat);
+            line.layers.set(1); // Ignore raycasting for dragging
+            line.raycast = () => {};
+            group.add(line);
         }
     });
     mesh.add(group);
@@ -486,28 +540,42 @@ function onPointerDown(e) {
     mouse.x = (e.clientX/window.innerWidth)*2-1;
     mouse.y = -(e.clientY/window.innerHeight)*2+1;
     raycaster.setFromCamera(mouse, camera);
-    const hits = raycaster.intersectObjects(fieldMeshes, true);
+    const clickable = fieldMeshes.map(m => m.userData.barMesh).filter(Boolean);
+    const hits = raycaster.intersectObjects(clickable, true);
     if(hits.length) {
-        let p = hits[0].object;
-        while(p.parent && !p.userData.isField) p = p.parent;
-        if(p.userData.isField) {
-            isDragging = true; draggedFieldId = p.userData.id; controls.enabled = false;
-            dragPlane.constant = -p.position.y;
-        }
+        const bar = hits[0].object;
+        const mode = dragModes[dragMode];
+        isDragging = true; draggedFieldId = bar.userData.id; controls.enabled = false;
+        dragPlane.normal.copy(mode.normal);
+        const magnetPos = bar.parent ? bar.parent.position : bar.position;
+        dragPlane.constant = -dragPlane.normal.dot(magnetPos);
+        lastPointer.set(e.clientX, e.clientY);
     }
 }
 function onPointerMove(e) {
     mouse.x = (e.clientX/window.innerWidth)*2-1;
     mouse.y = -(e.clientY/window.innerHeight)*2+1;
     if(isDragging && draggedFieldId!=null) {
-        raycaster.setFromCamera(mouse, camera);
-        const hit = new THREE.Vector3();
-        raycaster.ray.intersectPlane(dragPlane, hit);
-        if(hit) {
-            const f = fields.find(x=>x.id===draggedFieldId);
-            f.pos.copy(hit);
+        const f = fields.find(x=>x.id===draggedFieldId);
+        if(!f) return;
+        if(e.altKey) {
+            const deltaX = e.clientX - lastPointer.x;
+            const deltaY = e.clientY - lastPointer.y;
+            lastPointer.set(e.clientX, e.clientY);
+            const delta = (deltaX + deltaY) * 0.5;
+            const axis = dragModes[dragMode].rotateAxis;
+            f.rot[axis] = (f.rot[axis] + delta) % 360;
             updateFieldVisuals(draggedFieldId);
-            // Don't re-render UI here to avoid focus loss
+        } else {
+            raycaster.setFromCamera(mouse, camera);
+            const hit = new THREE.Vector3();
+            raycaster.ray.intersectPlane(dragPlane, hit);
+            if(hit) {
+                f.pos.copy(hit);
+                updateFieldVisuals(draggedFieldId);
+                lastPointer.set(e.clientX, e.clientY);
+                // Don't re-render UI here to avoid focus loss
+            }
         }
     }
 }
@@ -531,8 +599,24 @@ function setupUI() {
         world.gravity.set(0, parseFloat(e.target.value), 0);
         document.getElementById('gravity-val').innerText = e.target.value;
     };
-    
+
     document.getElementById('param-shape').onchange = (e) => { CONFIG.objectShape = e.target.value; resetObjects(); };
+}
+
+function setupDragOverlay() {
+    const overlay = document.getElementById('drag-overlay');
+    overlay.querySelectorAll('.drag-btn').forEach(btn => {
+        btn.onclick = () => setDragMode(btn.dataset.mode);
+    });
+    setDragMode(dragMode);
+}
+
+function setDragMode(mode) {
+    if(!dragModes[mode]) return;
+    dragMode = mode;
+    document.querySelectorAll('#drag-overlay .drag-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
 }
 
 function renderUI() {
@@ -543,12 +627,15 @@ function renderUI() {
         fields.forEach((f, i) => {
             const el = list.children[i];
             el.querySelector(`[data-bind="str"]`).value = f.strength;
+            el.querySelector(`[data-bind="asp"]`).value = f.aspectRatio;
             el.querySelector(`[data-bind="rx"]`).value = f.rot.x;
             el.querySelector(`[data-bind="ry"]`).value = f.rot.y;
             el.querySelector(`[data-bind="rz"]`).value = f.rot.z;
             el.querySelector(`[data-bind="px"]`).value = f.pos.x;
             el.querySelector(`[data-bind="py"]`).value = f.pos.y;
             el.querySelector(`[data-bind="pz"]`).value = f.pos.z;
+            el.querySelector(`[data-display="str"]`).innerText = f.strength.toFixed(1);
+            el.querySelector(`[data-display="asp"]`).innerText = f.aspectRatio.toFixed(1);
         });
         return;
     }
@@ -559,8 +646,8 @@ function renderUI() {
         el.className = 'field-item';
         el.innerHTML = `
             <div class="field-header"><span class="field-title">Mag #${f.id}</span><button class="remove-field" onclick="removeField(${f.id})">X</button></div>
-            <div class="control-group"><label>Strength</label><input type="range" data-bind="str" min="0" max="200" value="${f.strength}" oninput="updateField(${f.id},'str',null,this.value)"></div>
-            <div class="control-group"><label>Aspect</label><input type="range" data-bind="asp" min="1" max="10" step="0.5" value="${f.aspectRatio}" oninput="updateField(${f.id},'aspect',null,this.value)"></div>
+            <div class="control-group"><label>Strength <span class="value-display" data-display="str">${f.strength.toFixed(1)}</span></label><input type="range" data-bind="str" min="0" max="200" value="${f.strength}" oninput="updateField(${f.id},'str',null,this.value)"></div>
+            <div class="control-group"><label>Aspect <span class="value-display" data-display="asp">${f.aspectRatio.toFixed(1)}</span></label><input type="range" data-bind="asp" min="1" max="10" step="0.5" value="${f.aspectRatio}" oninput="updateField(${f.id},'aspect',null,this.value)"></div>
             <div class="slider-stack">
                <div class="slider-row"><label>RX</label><input type="range" data-bind="rx" min="-180" max="180" value="${f.rot.x}" oninput="updateField(${f.id},'rot','x',this.value)"></div>
                <div class="slider-row"><label>RY</label><input type="range" data-bind="ry" min="-180" max="180" value="${f.rot.y}" oninput="updateField(${f.id},'rot','y',this.value)"></div>
