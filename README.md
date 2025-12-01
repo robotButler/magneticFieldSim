@@ -1,0 +1,2 @@
+# magneticFieldSim
+Magnetic field simulator
